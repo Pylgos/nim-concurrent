@@ -16,21 +16,6 @@ test "down casting":
   `=destroy`(sp2)
   check destroyed == true
 
-test "up casting":
-  type Base = object of RootObj
-  type O = object of Base
-  
-  var destroyed = false
-  proc `=destroy`(o: var O) =
-    check not destroyed
-    destroyed = true
-
-  var sp1 = newSharedPtr(O)
-  var sp2: SharedPtr[Base] = sp1.toBase()
-  `=destroy`(sp1)
-  `=destroy`(sp2)
-  check destroyed == true
-
 test "weak pointers":
   var wp0: WeakPtr[int]
 

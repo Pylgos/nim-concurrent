@@ -131,6 +131,12 @@ proc `=copy`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
     traceReference dest, src
   dest.p = src.p
 
+when declared(system.`=dup`):
+  proc `=dup`*[T](src: SharedPtr[T]): SharedPtr[T] =
+    if src.p != nil:
+      discard fetchAdd(src.p.strong, 1, Relaxed)
+    result.p = src.p
+
 proc `=sink`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
   `=destroy`(dest)
   dest.p = src.p
@@ -178,11 +184,16 @@ proc `=destroy`*[T](wp: var WeakPtr[T]) =
     wp.p = nil
 
 proc `=copy`*[T](dest: var WeakPtr[T], src: WeakPtr[T]) =
+  `=destroy`(dest)
   if src.p != nil:
     discard fetchAdd(src.p.weak, 1, Relaxed)
-  if dest.p != nil:
-    `=destroy`(dest)
   dest.p = src.p
+
+when declared(system.`=dup`):
+  proc `=dup`*[T](src: WeakPtr[T]): WeakPtr[T] =
+    if src.p != nil:
+      discard fetchAdd(src.p.weak, 1, Relaxed)
+    result.p = src.p
 
 proc toWeak*[T](sp: SharedPtr[T]): WeakPtr[T] =
   if sp.p != nil:
@@ -235,9 +246,9 @@ proc `$`*[T](p: SharedPtr[T]): string {.inline.} =
 macro baseTypeOf(t: typed): typedesc =
   var impl = t.getTypeImpl()
   if impl[1].kind == nnkEmpty:
-    nnkCall.newTree(ident"typeof", nnkNilLit.newNimNode())
+    result = nnkCall.newTree(ident"typeof", nnkNilLit.newNimNode())
   else:
-    impl[1][0]
+    result = impl[1][0]
 
 proc castTo*[T, U](p: SharedPtr[T], _: typedesc[U]): SharedPtr[U] =
   when T isnot void and U isnot void:
