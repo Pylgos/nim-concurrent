@@ -72,10 +72,14 @@ proc replaceCapturedVars(vars: Table[string, NimNode], procDef, envType, envSym:
   procDef.body = procDef.body.normalizingRewrites().workaroundRewrites().NimNode
   procDef.body = replaceCapturedVarsAux(vars, procDef.name, procDef.body, envType, envSym)
 
-proc makeEnvType(vars: Table[string, NimNode]): NimNode =
-  result = nnkTupleTy.newNimNode()
+proc makeEnvType(vars: Table[string, NimNode]): tuple[def, sym: NimNode] =
+  var tup = nnkTupleTy.newNimNode()
   for (name, node) in vars.pairs:
-    result.add newIdentDefs(ident(name), node.getTypeInst())
+    tup.add newIdentDefs(ident(name), node.getTypeInst())
+  let sym = genSym(nskType, "EnvT")
+  result.def = quote do:
+    type `sym` = `tup`
+  result.sym = sym
 
 macro cannotIsolateError(node: untyped) =
   error(fmt"captured variable {repr node} cannot be isolated", node)
@@ -112,13 +116,13 @@ proc isolatedClosureBody(orig: NimNode): NimNode =
   orig.copyChildrenTo(fn)
   fn.addPragma ident"nimcall"
   fn.addPragma ident"gcsafe"
-  let envSym = genSym(nskParam)
+  let envSym = genSym(nskParam, "env")
   fn.params.insert(1,
     newIdentDefs(envSym, bindSym("pointer", brClosed))
   )
 
   let capturedVars = findCapturedVars(orig)
-  let envType = makeEnvType(capturedVars)
+  let (envTypeDef, envType) = makeEnvType(capturedVars)
   replaceCapturedVars(capturedVars, fn, envType, envSym)
   
   let fnName = fn.name
@@ -126,6 +130,7 @@ proc isolatedClosureBody(orig: NimNode): NimNode =
 
   quote:
     block:
+      `envTypeDef`
       `fn`
       let envPtr = createShared(`envType`)
       envPtr[] = `env`
