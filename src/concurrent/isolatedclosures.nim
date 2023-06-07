@@ -72,10 +72,23 @@ proc replaceCapturedVars(vars: Table[string, NimNode], procDef, envType, envSym:
   procDef.body = procDef.body.normalizingRewrites().workaroundRewrites().NimNode
   procDef.body = replaceCapturedVarsAux(vars, procDef.name, procDef.body, envType, envSym)
 
+proc skipTypes(n: NimNode): NimNode =
+  result = n
+  while true:
+    if result.kind == nnkBracketExpr and result[0].kind == nnkSym:
+      if result[0].eqIdent("sink"):
+        result = result[1]
+      elif result[0].eqIdent("lent"):
+        result = result[1]
+      else:
+        break
+    else:
+      break
+
 proc makeEnvType(vars: Table[string, NimNode]): tuple[def, sym: NimNode] =
   var tup = nnkTupleTy.newNimNode()
   for (name, node) in vars.pairs:
-    tup.add newIdentDefs(ident(name), node.getTypeInst())
+    tup.add newIdentDefs(ident(name), node.getTypeInst().skipTypes())
   let sym = genSym(nskType, "EnvT")
   result.def = quote do:
     type `sym` = `tup`
@@ -136,13 +149,16 @@ proc isolatedClosureBody(orig: NimNode): NimNode =
       envPtr[] = `env`
       initIsolatedClosure(`fnName`, envPtr, getEnvDestructor[`envType`]())
 
-macro isolatedClosure*(orig: typed): untyped =
+macro isolatedClosureBodyAux(n: typed): untyped =
+  isolatedClosureBody(n)
+
+macro isolatedClosure*(orig: untyped): untyped =
   orig.expectKind {nnkProcTy, nnkProcDef, nnkLambda, nnkDo}
   case orig.kind
   of nnkProcTy:
     result = isolatedClosureType(orig)
   of nnkProcDef, nnkLambda, nnkDo:
-    result = isolatedClosureBody(orig)
+    result = newCall(bindSym"isolatedClosureBodyAux", orig)
   else:
     doAssert false
 
