@@ -100,6 +100,13 @@ proc getEnvDestructor[T](): proc(p: pointer) {.nimcall, gcsafe, raises: [].} =
       `=destroy`(cast[ptr T](env)[])
       deallocShared(env)
 
+proc initIsolatedClosure*[T](fn: T, env: pointer, destructor: proc(env: pointer) {.nimcall, gcsafe, raises: [].}): IsolatedClosure[T] =
+  IsolatedClosure[T](
+    fn: fn,
+    env: env,
+    destructor: destructor
+  )
+
 proc isolatedClosureBody(orig: NimNode): NimNode =
   let fn = nnkProcDef.newNimNode()
   orig.copyChildrenTo(fn)
@@ -122,11 +129,7 @@ proc isolatedClosureBody(orig: NimNode): NimNode =
       `fn`
       let envPtr = createShared(`envType`)
       envPtr[] = `env`
-      IsolatedClosure[typeof(`fnName`)](
-        fn: `fnName`,
-        env: envPtr,
-        destructor: getEnvDestructor[`envType`]()
-      )
+      initIsolatedClosure(`fnName`, envPtr, getEnvDestructor[`envType`]())
 
 macro isolatedClosure*(orig: typed): untyped =
   orig.expectKind {nnkProcTy, nnkProcDef, nnkLambda, nnkDo}
