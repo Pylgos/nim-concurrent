@@ -6,14 +6,16 @@ test "down casting":
   type O = object of Base
 
   var destroyed = false
-  proc `=destroy`(o: var O) =
+  proc `=destroy`(o: O) =
     check not destroyed
     destroyed = true
 
   var sp1 = newSharedPtr(O)
   var sp2: SharedPtr[Base] = sp1.toBase()
   `=destroy`(sp1)
+  wasMoved(sp1)
   `=destroy`(sp2)
+  wasMoved(sp2)
   check destroyed == true
 
 test "weak pointers":
@@ -56,7 +58,7 @@ test "dot operators":
 test "default destructor":
   var ok = false
   type Impl = object
-  proc `=destroy`(a: var Impl) =
+  proc `=destroy`(a: Impl) =
     ok = true
   type O = object
     f: Impl

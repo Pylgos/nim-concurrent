@@ -12,10 +12,9 @@ proc `=copy`[T](dest: var IsolatedClosure[T], src: IsolatedClosure[T]) {.error.}
 proc `==`*[T](a: IsolatedClosure[T], b: T): bool =
   a.fn == b
 
-proc `=destroy`[T](self: var IsolatedClosure[T]) =
+proc `=destroy`[T](self: IsolatedClosure[T]) =
   if self.env != nil and self.destructor != nil:
     self.destructor(self.env)
-    self.env = nil
 
 proc nilIsolatedClosure*(T: typedesc[IsolatedClosure]): T =
   T()

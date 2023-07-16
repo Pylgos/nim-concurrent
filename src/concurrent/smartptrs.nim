@@ -84,7 +84,7 @@ template traceNew[T](sp: SharedPtr[T]) =
       sp.id = id
     echo "created: ", debug(sp)
 
-template traceReference[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
+template traceReference[T](dest: SharedPtr[T], src: SharedPtr[T]) =
   whenDebug:
     withLock refLocationLock:
       inc refCount
@@ -92,28 +92,28 @@ template traceReference[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
       ptrInfoStorage[][src.p].referrers[id] = ReferrerInfo(stackTrace: getStackTrace())
     echo "referenced: ", debug(src)
 
-template traceDestroy[T](sp: var SharedPtr[T]) =
+template traceDestroy[T](sp: SharedPtr[T]) =
   whenDebug:
     withLock refLocationLock:
       inc freeCount
       ptrInfoStorage[].del sp.p
     echo "destroyed: ", debug(sp)
 
-template traceUnreference[T](sp: var SharedPtr[T]) =
+template traceUnreference[T](sp: SharedPtr[T]) =
   whenDebug:
     withLock refLocationLock:
       inc unrefCount
       ptrInfoStorage[][sp.p].referrers.del sp.id
     echo "unreferenced: ", debug(sp)
 
-template traceSink[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
+template traceSink[T](dest: SharedPtr[T], src: SharedPtr[T]) =
   whenDebug:
     dest.id = src.id
     if src.p != nil and src.id != 0:
       withLock refLocationLock:
         ptrInfoStorage[][src.p].referrers[src.id].stackTrace = getStackTrace()
 
-proc `=destroy`*[T](sp: var SharedPtr[T]) =
+proc `=destroy`*[T](sp: SharedPtr[T]) =
   if sp.p != nil:
     if sp.p.strong.fetchSub(1, AcqRel) == 1:
       sp.p.destructor(addr sp.p.val)
@@ -122,7 +122,6 @@ proc `=destroy`*[T](sp: var SharedPtr[T]) =
         deallocShared(sp.p)
     else:
       traceUnreference(sp)
-    sp.p = nil
 
 proc `=copy`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
   `=destroy`(dest)
@@ -143,9 +142,12 @@ proc `=sink`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
   traceSink(dest, src)
 
 proc getDefaultDestructor(T: typedesc): Destructor =
-  proc(p: pointer) {.nimcall, raises: [].} =
+  proc destructor(p: pointer) {.nimcall, raises: [].} =
     {.cast(raises: []).}:
-      `=destroy`(cast[ptr T](p)[])
+      # HACK: compiler bug workaround
+      var v = cast[ptr T](p)
+      `=destroy`(v[])
+  result = destructor
 
 proc newSharedPtr*[T](val: sink Isolated[T], destructor: Destructor = getDefaultDestructor(T)): SharedPtr[T] {.nodestroy.} =
   ## Returns a shared pointer which shares
@@ -177,11 +179,10 @@ type
   WeakPtr*[T] = object
     p: ptr Inner[T]
 
-proc `=destroy`*[T](wp: var WeakPtr[T]) =
+proc `=destroy`*[T](wp: WeakPtr[T]) =
   if wp.p != nil:
     if fetchSub(wp.p.weak, 1, AcqRel) == 1:
       deallocShared(wp.p)
-    wp.p = nil
 
 proc `=copy`*[T](dest: var WeakPtr[T], src: WeakPtr[T]) =
   `=destroy`(dest)

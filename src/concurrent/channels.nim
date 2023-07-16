@@ -2,78 +2,77 @@ import std/[deques, locks, isolation]
 
 
 type
-  Chan*[T] = object
-    initialized: bool
-    size: Natural
+  ChanData[T] = object
     guard: Lock
-    buffer {.guard: guard.}: Deque[Isolated[T]]
     spaceAvailable: Cond
     dataAvailable: Cond
+    buffer: Deque[Isolated[T]]
+
+  Chan*[T] = object
+    size: Natural
+    data: ptr ChanData[T]
 
 proc `=copy`[T](dest: var Chan[T], src: Chan[T]) {.error.}
 
-proc `=destroy`[T](self: var Chan[T]) =
-  if self.initialized:
-    deinitLock self.guard
-    deinitCond self.spaceAvailable
-    deinitCond self.dataAvailable
-    self.initialized = false
-  {.locks: [self.guard]}:
-    `=destroy`(self.buffer)
-
+proc `=destroy`[T](self: Chan[T]) =
+  if self.data != nil:
+    deinitLock self.data.guard
+    deinitCond self.data.spaceAvailable
+    deinitCond self.data.dataAvailable
+    deallocShared self.data
+  `=destroy`(self.data.buffer)
 
 proc initChan*(T: typedesc, size = -1): Chan[T] = 
+  result.data = createShared(ChanData[T])
+  initLock result.data.guard
+  initCond result.data.spaceAvailable
+  initCond result.data.dataAvailable
   if size == -1:
     result.size = Natural.high
   else:
     result.size = size
-    {.locks: [result.guard]}:
-      result.buffer = initDeque[Isolated[T]](size)
-  initLock result.guard
-  initCond result.spaceAvailable
-  initCond result.dataAvailable
-  result.initialized = true
+    result.data.buffer = initDeque[Isolated[T]](size)
 
 proc send*[T](self: var Chan[T], item: sink Isolated[T]) =
-  withLock self.guard:
-    if self.buffer.len == self.size:
-      wait self.spaceAvailable, self.guard
+  withLock self.data.guard:
+    if self.data.buffer.len == self.size:
+      wait self.data.spaceAvailable, self.data.guard
     
-    self.buffer.addFirst item
+    self.data.buffer.addFirst item
     
-    if self.buffer.len == 1:
-      signal self.dataAvailable
+    if self.data.buffer.len == 1:
+      signal self.data.dataAvailable
 
 proc trySend*[T](self: var Chan[T], item: sink Isolated[T]): bool =
-  withLock self.guard:
-    if self.buffer.len == self.size:
+  withLock self.data.guard:
+    if self.data.buffer.len == self.size:
       return false
     
-    self.buffer.addFirst item
+    self.data.buffer.addFirst item
     
-    if self.buffer.len == 1:
-      signal self.dataAvailable
+    if self.data.buffer.len == 1:
+      signal self.data.dataAvailable
   return true
 
 proc recvIso*[T](self: var Chan[T]): Isolated[T] =
-  withLock self.guard:
-    if self.buffer.len == 0:
-      wait self.dataAvailable, self.guard
+  withLock self.data.guard:
+    if self.data.buffer.len == 0:
+      wait self.data.dataAvailable, self.data.guard
     
-    result = self.buffer.popLast()
+    result = self.data.buffer.popLast()
 
-    if self.buffer.len == self.size - 1:
-      signal self.spaceAvailable
+    if self.data.buffer.len == self.size - 1:
+      signal self.data.spaceAvailable
 
 proc tryRecvIso*[T](self: var Chan[T], dest: var Isolated[T]): bool =
-  withLock self.guard:
-    if self.buffer.len == 0:
+  withLock self.data.guard:
+    if self.data.buffer.len == 0:
       return false
 
-    dest = self.buffer.popLast()
+    dest = self.data.buffer.popLast()
 
-    if self.buffer.len == self.size - 1:
-      signal self.spaceAvailable
+    if self.data.buffer.len == self.size - 1:
+      signal self.data.spaceAvailable
   return true
 
 proc recv*[T](self: var Chan[T]): T =
