@@ -61,18 +61,18 @@ proc recvIso*[T](self: var Chan[T]): Isolated[T] =
       wait self.dataAvailable, self.guard
     
     result = self.buffer.popLast()
-    
-    if self.buffer.len - 1 == self.size:
+
+    if self.buffer.len == self.size - 1:
       signal self.spaceAvailable
 
 proc tryRecvIso*[T](self: var Chan[T], dest: var Isolated[T]): bool =
   withLock self.guard:
     if self.buffer.len == 0:
       return false
-    
+
     dest = self.buffer.popLast()
-    
-    if self.buffer.len - 1 == self.size:
+
+    if self.buffer.len == self.size - 1:
       signal self.spaceAvailable
   return true
 
