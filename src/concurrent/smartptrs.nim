@@ -4,7 +4,7 @@ import threading/atomics
 proc raiseNilAccess() {.noinline.} =
   raise newException(NilAccessDefect, "dereferencing nil smart pointer")
 
-const debugSmartPtrs {.booldefine.}: bool = false
+const debugSmartPtrs {.booldefine: "concurrent.smartptrs.debug".}: bool = false
 
 template whenDebug(body: untyped) =
   when debugSmartPtrs:
@@ -27,7 +27,7 @@ type
       id: ReferrerId
 
 whenDebug:
-  import std/[tables, locks, strutils]
+  import std/[tables, rlocks, strutils, hashes]
 
   type
     ReferrerInfo = object
@@ -44,20 +44,20 @@ whenDebug:
     unrefCount: int
     referrerIdCounter = 1
     ptrInfoStorage = createShared(Table[pointer, PtrInfo])
-    refLocationLock: Lock
+    refLocationLock: RLock
   
-  initLock refLocationLock
+  initRLock refLocationLock
 
   proc newId(): ReferrerId =
     result = referrerIdCounter
     inc referrerIdCounter
 
   addQuitProc() do() {.noconv.}:
-    echo "allocation count: ", allocCount
+    echo "new count: ", allocCount
     echo "free count: ", freeCount
     echo "reference count: ", refCount
     echo "unreference count: ", unrefCount
-    withLock refLocationLock:
+    withRLock refLocationLock:
       for (address, info) in ptrInfoStorage[].pairs:
         echo "Still referenced: "
         echo "  address: ", repr address
@@ -67,6 +67,12 @@ whenDebug:
         for (id, referrerInfo) in info.referrers.pairs:
           echo "    ", id
           echo "      stackTrace: ", referrerInfo.stackTrace.indent(8)
+  
+  proc `==`*[T](a, b: SharedPtr[T]): bool =
+    a.p == b.p
+  
+  proc hash*[T](a: SharedPtr[T]): Hash =
+    hash(a.p)
 
 proc debug[T](p: SharedPtr[T]): string =
   const typName = $T
@@ -74,7 +80,7 @@ proc debug[T](p: SharedPtr[T]): string =
 
 template traceNew[T](sp: SharedPtr[T]) =
   whenDebug:
-    withLock refLocationLock:
+    withRLock refLocationLock:
       inc allocCount
       let id = newId()
       ptrInfoStorage[][sp.p] = PtrInfo(
@@ -82,35 +88,37 @@ template traceNew[T](sp: SharedPtr[T]) =
         referrers: toTable({id: ReferrerInfo(stackTrace: getStackTrace())})
       )
       sp.id = id
-    echo "created: ", debug(sp)
+    debugEcho "created: ", debug(sp)
 
-template traceReference[T](dest: SharedPtr[T], src: SharedPtr[T]) =
+template traceReference[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
   whenDebug:
-    withLock refLocationLock:
+    withRLock refLocationLock:
       inc refCount
       let id = newId()
       ptrInfoStorage[][src.p].referrers[id] = ReferrerInfo(stackTrace: getStackTrace())
-    echo "referenced: ", debug(src)
+      dest.id = id
+    debugEcho "referenced: ", debug(src)
 
 template traceDestroy[T](sp: SharedPtr[T]) =
   whenDebug:
-    withLock refLocationLock:
+    withRLock refLocationLock:
       inc freeCount
       ptrInfoStorage[].del sp.p
-    echo "destroyed: ", debug(sp)
+    debugEcho "destroyed: ", debug(sp)
 
 template traceUnreference[T](sp: SharedPtr[T]) =
   whenDebug:
-    withLock refLocationLock:
+    withRLock refLocationLock:
+      doAssert sp.id != 0
       inc unrefCount
       ptrInfoStorage[][sp.p].referrers.del sp.id
-    echo "unreferenced: ", debug(sp)
+    debugEcho "unreferenced: ", debug(sp)
 
 template traceSink[T](dest: SharedPtr[T], src: SharedPtr[T]) =
   whenDebug:
     dest.id = src.id
     if src.p != nil and src.id != 0:
-      withLock refLocationLock:
+      withRLock refLocationLock:
         ptrInfoStorage[][src.p].referrers[src.id].stackTrace = getStackTrace()
 
 proc `=destroy`*[T](sp: SharedPtr[T]) =
@@ -134,6 +142,7 @@ when declared(system.`=dup`):
   proc `=dup`*[T](src: SharedPtr[T]): SharedPtr[T] =
     if src.p != nil:
       discard fetchAdd(src.p.strong, 1, Relaxed)
+      traceReference result, src
     result.p = src.p
 
 proc `=sink`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
@@ -208,7 +217,14 @@ proc lock*[T](wp: WeakPtr[T]): SharedPtr[T] =
       return
     while true:
       if wp.p.strong.compareExchangeWeak(n, n + 1, Relaxed):
-        return SharedPtr[T](p: wp.p)
+        when debugSmartPtrs:
+          withRLock refLocationLock:
+            inc refCount
+            let id = newId()
+            ptrInfoStorage[][wp.p].referrers[id] = ReferrerInfo(stackTrace: getStackTrace())
+            return SharedPtr[T](p: wp.p, id: id)
+        else:
+          return SharedPtr[T](p: wp.p)
 
 proc `==`*[T](p: SharedPtr[T], t: typeof(nil)): bool {.inline.} =
   p.p == t
