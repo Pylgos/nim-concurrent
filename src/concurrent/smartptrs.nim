@@ -4,11 +4,9 @@ import threading/atomics
 proc raiseNilAccess() {.noinline.} =
   raise newException(NilAccessDefect, "dereferencing nil smart pointer")
 
-const debugSmartPtrs {.booldefine: "concurrent.smartptrs.debug".}: bool = false
-
-template whenDebug(body: untyped) =
-  when debugSmartPtrs:
-    body
+const
+  debug {.booldefine: "concurrent.smartptrs.debug".}: bool = false
+  leakCheck {.booldefine: "concurrent.smartptrs.leakCheck".}: bool = false
 
 type
   ReferrerId = int
@@ -23,10 +21,24 @@ type
 
   SharedPtr*[T] = object
     p: ptr Inner[T]
-    when debugSmartPtrs:
+    when debug:
       id: ReferrerId
 
-whenDebug:
+when debug or leakCheck:
+  const logHeader = "concurrent/smartptrs: "
+
+  func debugLog(s: varargs[string, `$`]) =
+    {.cast(noSideEffect).}:
+      stdout.write logHeader
+      for ss in s:
+        stdout.write ss
+      stdout.write '\n'
+
+  var
+    allocCount: Atomic[int]
+    freeCount: Atomic[int]
+
+when debug:
   import std/[tables, rlocks, strutils, hashes]
 
   type
@@ -38,8 +50,6 @@ whenDebug:
       referrers: Table[ReferrerId, ReferrerInfo]
 
   var
-    allocCount: int
-    freeCount: int
     refCount: int
     unrefCount: int
     referrerIdCounter = 1
@@ -53,69 +63,83 @@ whenDebug:
     inc referrerIdCounter
 
   addQuitProc() do() {.noconv.}:
-    echo "new count: ", allocCount
-    echo "free count: ", freeCount
-    echo "reference count: ", refCount
-    echo "unreference count: ", unrefCount
+    debugLog "new count: ", allocCount.load(Relaxed)
+    debugLog "free count: ", freeCount.load(Relaxed)
+    debugLog "reference count: ", refCount
+    debugLog "unreference count: ", unrefCount
     withRLock refLocationLock:
       for (address, info) in ptrInfoStorage[].pairs:
-        echo "Still referenced: "
-        echo "  address: ", repr address
-        echo "  typeName: ", info.typeName
-        echo "  refCount: ", cast[ptr Inner[void]](address).strong.load()
-        echo "  referrers:"
+        debugLog "Still referenced: "
+        debugLog "  address: ", repr address
+        debugLog "  typeName: ", info.typeName
+        debugLog "  refCount: ", cast[ptr Inner[void]](address).strong.load()
+        debugLog "  referrers:"
         for (id, referrerInfo) in info.referrers.pairs:
-          echo "    ", id
-          echo "      stackTrace: ", referrerInfo.stackTrace.indent(8)
-  
+          debugLog "    id=", id, " stackTrace:"
+          for line in referrerInfo.stackTrace.indent(6).splitLines():
+            debugLog line
+
   proc `==`*[T](a, b: SharedPtr[T]): bool =
     a.p == b.p
   
   proc hash*[T](a: SharedPtr[T]): Hash =
     hash(a.p)
 
-proc debug[T](p: SharedPtr[T]): string =
+when leakCheck:
+  addQuitProc() do() {.noconv.}:
+    if allocCount.load(Relaxed) != freeCount.load(Relaxed):
+      debugLog "@@@@@@@@ MEMORY LEAK @@@@@@@@"
+      when not debug:
+        debugLog "new count: ", allocCount.load(Relaxed)
+        debugLog "free count: ", freeCount.load(Relaxed)
+      quit(1)
+
+proc repr[T](p: SharedPtr[T]): string =
   const typName = $T
   fmt"SmartPtr[{typName}]({repr cast[pointer](p.p)})"
 
 template traceNew[T](sp: SharedPtr[T]) =
-  whenDebug:
+  when debug or leakCheck:
+    allocCount.atomicInc()
+  when debug:
     withRLock refLocationLock:
-      inc allocCount
+      inc refCount
       let id = newId()
       ptrInfoStorage[][sp.p] = PtrInfo(
         typeName: $typeof(sp.p.val),
         referrers: toTable({id: ReferrerInfo(stackTrace: getStackTrace())})
       )
       sp.id = id
-    debugEcho "created: ", debug(sp)
+    debugLog "created: ", repr(sp)
 
 template traceReference[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
-  whenDebug:
+  when debug:
     withRLock refLocationLock:
       inc refCount
       let id = newId()
       ptrInfoStorage[][src.p].referrers[id] = ReferrerInfo(stackTrace: getStackTrace())
       dest.id = id
-    debugEcho "referenced: ", debug(src)
+    debugLog "referenced: ", repr(src)
 
 template traceDestroy[T](sp: SharedPtr[T]) =
-  whenDebug:
+  when debug or leakCheck:
+    freeCount.atomicInc()
+  when debug:
+    inc unrefCount
     withRLock refLocationLock:
-      inc freeCount
       ptrInfoStorage[].del sp.p
-    debugEcho "destroyed: ", debug(sp)
+    debugLog "destroyed: ", repr(sp)
 
 template traceUnreference[T](sp: SharedPtr[T]) =
-  whenDebug:
+  when debug:
     withRLock refLocationLock:
       doAssert sp.id != 0
       inc unrefCount
       ptrInfoStorage[][sp.p].referrers.del sp.id
-    debugEcho "unreferenced: ", debug(sp)
+    debugLog "unreferenced: ", repr(sp)
 
 template traceSink[T](dest: SharedPtr[T], src: SharedPtr[T]) =
-  whenDebug:
+  when debug:
     dest.id = src.id
     if src.p != nil and src.id != 0:
       withRLock refLocationLock:
@@ -199,7 +223,7 @@ proc `=copy`*[T](dest: var WeakPtr[T], src: WeakPtr[T]) =
     discard fetchAdd(src.p.weak, 1, Relaxed)
   dest.p = src.p
 
-when declared(system.`=dup`):
+when defined(nimHasDup):
   proc `=dup`*[T](src: WeakPtr[T]): WeakPtr[T] =
     if src.p != nil:
       discard fetchAdd(src.p.weak, 1, Relaxed)
@@ -217,7 +241,7 @@ proc lock*[T](wp: WeakPtr[T]): SharedPtr[T] =
       return
     while true:
       if wp.p.strong.compareExchangeWeak(n, n + 1, Relaxed):
-        when debugSmartPtrs:
+        when debug:
           withRLock refLocationLock:
             inc refCount
             let id = newId()
