@@ -19,8 +19,8 @@ proc `=destroy`[T](self: Chan[T]) =
     deinitLock self.data.guard
     deinitCond self.data.spaceAvailable
     deinitCond self.data.dataAvailable
+    `=destroy`(self.data.buffer)
     deallocShared self.data
-  `=destroy`(self.data.buffer)
 
 proc initChan*(T: typedesc, size = -1): Chan[T] = 
   result.data = createShared(ChanData[T])
