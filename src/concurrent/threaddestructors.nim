@@ -1,18 +1,18 @@
-
 import mainthreadids
 
 
 type DestructorContainer = object
-  procs*: seq[proc() {.closure, gcsafe, raises: [].}]
+  procs: seq[proc() {.closure, gcsafe, raises: [].}]
 
-proc `=destroy`(self: var DestructorContainer) =
+proc `=destroy`(self: DestructorContainer) =
   for p in self.procs:
     p()
 
 var destructors: DestructorContainer
 
-proc addThreadDestructor*(p: proc() {.closure, gcsafe, raises: [].}) =
+proc addThreadDestructor*(p: proc() {.closure, gcsafe, raises: [].}) {.gcsafe.} =
   if getThreadId() == mainThreadId:
-    destructors.procs.add p
+    {.cast(gcsafe).}:
+      destructors.procs.add p
   else:
     onThreadDestruction(p)

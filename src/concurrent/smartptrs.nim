@@ -162,7 +162,7 @@ proc `=copy`*[T](dest: var SharedPtr[T], src: SharedPtr[T]) =
     traceReference dest, src
   dest.p = src.p
 
-when declared(system.`=dup`):
+when defined(nimHasDup):
   proc `=dup`*[T](src: SharedPtr[T]): SharedPtr[T] =
     if src.p != nil:
       discard fetchAdd(src.p.strong, 1, Relaxed)
