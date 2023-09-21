@@ -40,8 +40,7 @@ proc send*[T](self: var Chan[T], item: sink Isolated[T]) =
     
     self.data.buffer.addFirst item
     
-    if self.data.buffer.len == 1:
-      signal self.data.dataAvailable
+    signal self.data.dataAvailable
 
 proc trySend*[T](self: var Chan[T], item: sink Isolated[T]): bool =
   withLock self.data.guard:
@@ -50,13 +49,12 @@ proc trySend*[T](self: var Chan[T], item: sink Isolated[T]): bool =
     
     self.data.buffer.addFirst item
     
-    if self.data.buffer.len == 1:
-      signal self.data.dataAvailable
+    signal self.data.dataAvailable
   return true
 
 proc recvIso*[T](self: var Chan[T]): Isolated[T] =
   withLock self.data.guard:
-    if self.data.buffer.len == 0:
+    while self.data.buffer.len == 0:
       wait self.data.dataAvailable, self.data.guard
     
     result = self.data.buffer.popLast()
